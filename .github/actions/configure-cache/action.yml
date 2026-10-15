@@ -1,0 +1,41 @@
+name: Configure compiler cache
+description: Export GitHub cache credentials and verify compilation before downloading sources.
+inputs:
+  arch:
+    required: true
+    description: Target architecture used as the compiler cache namespace.
+runs:
+  using: composite
+  steps:
+    - name: Export GitHub cache runtime
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+      env:
+        CACHE_ARCH: ${{ inputs.arch }}
+      with:
+        script: |
+          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+            if (!process.env[name]) {
+              throw new Error(`Required GitHub cache runtime variable is missing: ${name}`);
+            }
+          }
+          core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
+          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN',
+                              'ACTIONS_CACHE_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
+            core.exportVariable(name, process.env[name] || '');
+          }
+          core.exportVariable('SCCACHE_GHA_ENABLED', 'on');
+          core.exportVariable('SCCACHE_GHA_VERSION', process.env.CACHE_ARCH);
+    - name: Verify compiler cache startup and compilation
+      shell: bash
+      run: |
+        set -euo pipefail
+        sccache --stop-server >/dev/null 2>&1 || true
+        sccache --start-server
+        probe=$(mktemp -d "$RUNNER_TEMP/helium-cache.XXXXXX")
+        trap 'rm -rf "$probe"' EXIT
+        printf 'int helium_cache_probe() { return 0; }\n' > "$probe/probe.cc"
+        sccache "$(xcrun --find clang++)" -c "$probe/probe.cc" -o "$probe/first.o"
+        sccache "$(xcrun --find clang++)" -c "$probe/probe.cc" -o "$probe/second.o"
+        test -s "$probe/first.o"
+        test -s "$probe/second.o"
+        sccache --show-stats

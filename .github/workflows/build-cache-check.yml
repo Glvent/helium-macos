@@ -1,0 +1,31 @@
+name: Check compiler cache
+
+on:
+  push:
+    paths:
+      - '.github/actions/configure-cache/**'
+      - '.github/workflows/build-phase.yml'
+      - '.github/workflows/build-cache-check.yml'
+  pull_request:
+    paths:
+      - '.github/actions/configure-cache/**'
+      - '.github/workflows/build-phase.yml'
+      - '.github/workflows/build-cache-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install compiler cache
+        run: brew install sccache
+      - uses: ./.github/actions/configure-cache
+        with:
+          arch: arm64
