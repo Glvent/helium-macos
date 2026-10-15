@@ -37,6 +37,9 @@ jobs:
           submodules: true
           persist-credentials: false
       - uses: ./.github/actions/prepare-environment
+      - uses: ./.github/actions/configure-cache
+        with:
+          arch: ${{ inputs.arch }}
       - name: Download resources
         if: ${{ !inputs.resume }}
         uses: actions/download-artifact@v4
