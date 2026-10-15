@@ -19,14 +19,19 @@ if [ -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
 
   xattr -cs out/Default/Helium.app
 
-  # Prepar the certificate for app signing
-  echo $MACOS_CERTIFICATE | base64 --decode > "$TMPDIR/certificate.p12"
-
-  security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  security default-keychain -s build.keychain
-  security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  security import "$TMPDIR/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+  # Personal builds use the existing ad-hoc signing path without Apple secrets.
+  if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
+    # Do not trace certificate material or keychain passwords into the build log.
+    set +x
+    printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$TMPDIR/certificate.p12"
+    security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    security default-keychain -s build.keychain
+    security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    security import "$TMPDIR/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    rm -f "$TMPDIR/certificate.p12"
+    set -x
+  fi
 
   if ! [ -z "${PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_B64:-}" ]; then
     export PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH=$(mktemp)
@@ -62,9 +67,11 @@ if [ -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
     DELTA_ARG="--arm"
   fi
 
-  PATH="$_src_dir/out/Default:$PATH" python3 "$_root_dir/devutils/generate_sparkle_deltas.py" \
-    "$DELTA_ARG" "./release_asset/$_file_name" \
-    --out ./release_asset
+  if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
+    PATH="$_src_dir/out/Default:$PATH" python3 "$_root_dir/devutils/generate_sparkle_deltas.py" \
+      "$DELTA_ARG" "./release_asset/$_file_name" \
+      --out ./release_asset
+  fi
 
   {
     echo 'deltas<<EOF'
@@ -76,19 +83,17 @@ if [ -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
   du -hs release_asset/
 fi
 
-gsync --file-system "$_src_dir"
-
-# Needs to be compressed to stay below GitHub's upload limit 2 GB (?!) 2020-11-24; used to be  5-8GB (?)
-tar -C build -c -f - src | zstd -vv -11 -T0 -o build_src.tar.zst
-
-sha256sum ./build_src.tar.zst | tee ./sums.txt
-
-mkdir -p upload_part_build
-mv build_src.tar.zst sums.txt upload_part_build/
-cp -va ./*.log upload_part_build/
-
-ls -kahl upload_part_build/
-du -hs upload_part_build/
+# A successful build needs only its DMG; checkpoints are for unfinished phases.
+if [ ! -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
+  gsync --file-system "$_src_dir"
+  tar -C build -c -f - src | zstd -vv -11 -T0 -o build_src.tar.zst
+  sha256sum ./build_src.tar.zst | tee ./sums.txt
+  mkdir -p upload_part_build
+  mv build_src.tar.zst sums.txt upload_part_build/
+  cp -va ./*.log upload_part_build/
+  ls -kahl upload_part_build/
+  du -hs upload_part_build/
+fi
 
 mkdir upload_logs
 mv -vn ./*.log upload_logs/

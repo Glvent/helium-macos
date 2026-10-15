@@ -1,0 +1,99 @@
+name: Zenkai Clay for Apple Silicon
+run-name: Zenkai Clay macOS arm64 (${{ github.sha }})
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zenkai-clay-macos-arm64
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Apple Silicon app
+    uses: ./.github/workflows/building.yml
+    with:
+      arch: arm64
+      os: macos-26
+    # No inherited release, signing, notarization, or upstream update secrets.
+
+  verify:
+    name: Verify app and publish download instructions
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Download completed disk image
+        uses: actions/download-artifact@v4
+        with:
+          pattern: helium_*_arm64-macos.dmg
+          merge-multiple: true
+          path: dist
+      - name: Verify checksum, signing, architecture, and startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dist/helium_*_arm64-macos.dmg)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo '::error::No completed DMG. The build failed or exhausted its checkpoint phases.'
+            exit 1
+          fi
+          dmg="${images[0]}"
+          expected=$(awk '$1 == "sha256:" {print $2}' "$dmg.hashes.md")
+          actual=$(shasum -a 256 "$dmg" | awk '{print $1}')
+          test -n "$expected"
+          test "$actual" = "$expected"
+          mount="$RUNNER_TEMP/zenkai-clay-dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" -force' EXIT
+          app="$mount/Helium.app"
+          codesign --verify --deep --strict "$app"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          binary="$app/Contents/MacOS/$executable"
+          test "$(lipo -archs "$binary")" = arm64
+          python3 - "$binary" "$RUNNER_TEMP/zenkai-clay-smoke" <<'PY'
+          import subprocess
+          import sys
+          result = subprocess.run([
+              sys.argv[1], '--headless=new', '--disable-gpu', '--no-first-run',
+              '--no-default-browser-check', '--user-data-dir=' + sys.argv[2],
+              '--dump-dom', 'about:blank',
+          ], capture_output=True, text=True, timeout=90, check=True)
+          if '<html' not in result.stdout:
+              raise SystemExit('Helium did not render the smoke-test page')
+          print('Helium arm64 startup and rendering passed')
+          PY
+          {
+            echo '## Zenkai Clay for Apple Silicon'
+            echo
+            echo 'Download the DMG artifact from this run, unzip it, then drag Helium into Applications.'
+            echo 'Select Zenkai Clay in Settings → Appearance. It uses dark mode and is built into the browser.'
+            echo
+            echo 'This personal build is ad-hoc signed and is not notarized by Apple. macOS may require Open Anyway in Privacy & Security.'
+            echo
+            printf 'SHA-256: `%s`\n' "$actual"
+            printf 'Platform commit: `%s`\n' "$GITHUB_SHA"
+            echo 'Checksum, code signature, arm64 architecture, and headless rendering verified.'
+            echo 'DMG retention: 7 days. Re-run this workflow to build it again.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete temporary source and checkpoint artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == "helium_macos_resources_arm64" or .name == "github_build_artifact_arm64") | .id' \
+            | while IFS= read -r artifact_id; do
+                gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$artifact_id"
+              done
