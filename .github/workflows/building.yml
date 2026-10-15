@@ -41,6 +41,9 @@ jobs:
         with:
           name: helium_macos_resources_${{ inputs.arch }}
           path: upload_build_resources/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
 
   build_job_01:
     needs: retrieve-resources

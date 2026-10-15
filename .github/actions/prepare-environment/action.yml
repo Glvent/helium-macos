@@ -1,4 +1,5 @@
 name: Prepare build environment
+description: Prepare Python, Xcode, disk space, and the macOS build toolchain.
 runs:
   using: composite
   steps:
